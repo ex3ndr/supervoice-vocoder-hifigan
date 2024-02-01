@@ -73,27 +73,26 @@ class ResBlock2(torch.nn.Module):
 # HiFi GAN Generator
 #
 
-class Generator(torch.nn.Module):
-    def __init__(self, config):
-        super(Generator, self).__init__()
-        self.config = config
-        self.num_kernels = len(config.resblock_kernel_sizes)
-        self.num_upsamples = len(config.upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(config.n_mels, config.upsample_initial_channel, 7, 1, padding=3))
-        resblock = ResBlock1 if config.resblock == '1' else ResBlock2
+class HiFiGAN(torch.nn.Module):
+    def __init__(self, *, resblock_kernel_sizes, upsample_rates, upsample_kernel_sizes, mels_n, upsample_initial_channel, resblock, resblock_dilation_sizes):
+        super(HiFiGAN, self).__init__()
+        self.num_kernels = len(resblock_kernel_sizes)
+        self.num_upsamples = len(upsample_rates)
+        self.conv_pre = weight_norm(Conv1d(mels_n, upsample_initial_channel, 7, 1, padding=3))
+        resblock = ResBlock1 if resblock == '1' else ResBlock2
 
         # Upsample blocks
         self.ups = nn.ModuleList()
-        for i, (u, k) in enumerate(zip(config.upsample_rates, config.upsample_kernel_sizes)):
+        for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
             self.ups.append(weight_norm(
-                ConvTranspose1d(config.upsample_initial_channel//(2**i), config.upsample_initial_channel//(2**(i+1)),
+                ConvTranspose1d(upsample_initial_channel//(2**i), upsample_initial_channel//(2**(i+1)),
                                 k, u, padding=(k-u)//2)))
 
         # Residual blocks
         self.resblocks = nn.ModuleList()
         for i in range(len(self.ups)):
-            ch = config.upsample_initial_channel//(2**(i+1))
-            for j, (k, d) in enumerate(zip(config.resblock_kernel_sizes, config.resblock_dilation_sizes)):
+            ch = upsample_initial_channel//(2**(i+1))
+            for j, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
                 self.resblocks.append(resblock(ch, k, d))
 
         # Post processing

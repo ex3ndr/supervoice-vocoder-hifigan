@@ -1,6 +1,6 @@
 # 🎤 Supervoice Vocoder
 
-This is a training scripts of Vocoder model using Supervoice. Supervoice uses HiFiGAN as a vocoder model. We are re-training vocos to make it compatible with more popular Log-Mel spectograms parameters. We have made a small modification - replacing leaky relu with gelu activation function.
+This is a training scripts of vocoder of Supervoice. Supervoice uses HiFiGAN as a vocoder model, we need to re-train it to make it compatible with more popular Log-Mel spectograms parameters. We have made a small modification - replacing leaky relu with gelu activation function.
 
 ## Requirements
 
@@ -18,6 +18,13 @@ To download datasets you need a [datasets](https://github.com/ex3ndr/datasets) t
 datasets sync
 ```
 
+## Training
+
+This script automatically selects all GPU for training and you can run it by running:
+
+```bash
+python train.py
+```
 
 # License
 

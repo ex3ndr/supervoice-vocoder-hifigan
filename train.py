@@ -6,6 +6,7 @@ warnings.filterwarnings("ignore")
 import itertools
 from glob import glob
 import shutil
+from pathlib import Path
 
 # ML
 import torch
@@ -36,33 +37,36 @@ train_segment_size = 8000
 train_learning_rate = 2e-4
 train_adam_b1 = 0.8
 train_adam_b2 = 0.99
-train_batch_size = 16 # Per GPU
+train_batch_size = 64 # Per GPU
 train_steps = 1000000
 train_loader_workers = 4
 train_save_every = 1000
 train_log_every = 1
 
-# Train loop
+# Train
 def main():
 
     # Prepare accelerator
     print("Loading accelerator...")
     accelerator = Accelerator(log_with="wandb")
     device = accelerator.device
+    output_dir = Path("./output")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Prepare dataset
-    print("Loading dataset...")
+    accelerator.print("Loading dataset...")
     # train_files = glob("external_datasets/libritts-r-clean-100/*/*.wav") + glob("external_datasets/libritts-r-clean-360/*/*.wav") + glob("external_datasets/libritts-r-other-500/*/*.wav")
     train_files = glob("external_datasets/libritts-r/dev-clean/*/*/*.wav") + glob("external_datasets/libritts-r/dev-other/*/*/*.wav")
     test_files = glob("external_datasets/libritts-r/test-clean/*/*/*.wav") + glob("external_datasets/libritts-r/test-other/*/*/*.wav")
-    print(len(train_files), len(test_files))
+    train_files.sort() # For reproducibility
+    test_files.sort()
     train_dataset = MelSpecDataset(files = train_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
     test_dataset = MelSpecDataset(files = test_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=train_loader_workers, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=train_batch_size, shuffle=False, num_workers=train_loader_workers, pin_memory=True)
 
     # Prepare model
-    print("Loading model...")
+    accelerator.print("Loading model...")
     steps = 0
     generator = HiFiGAN(
         mels_n=vocoder_mel_n,
@@ -91,38 +95,60 @@ def main():
         "batch_size": train_batch_size, 
         "steps": train_steps, 
     }
-    accelerator.init_trackers("my_project", config=hps)
+    accelerator.init_trackers(train_project, config=hps)
     mpd = mpd.to(device)
     msd = msd.to(device)
     generator = generator.to(device)
 
     # Save and Load
     def save():
+
+        # Save step checkpoint
+        fname = str(output_dir / f"{train_experiment}.pt")
+        fname_step = str(output_dir / f"{train_experiment}.{steps}.pt")
         torch.save({
 
             # Model
-            'generator': generator.state_dict(), 
-            "mpd": mpd.state_dict(),
-            "msd": msd.state_dict(),
+            'generator': accelerator.get_state_dict(generator), 
+            "mpd": accelerator.get_state_dict(mpd),
+            "msd": accelerator.get_state_dict(msd),
 
             # Optimizer
+            'steps': steps,
             'optimizer_g': optim_g.state_dict(), 
             'optimizer_d': optim_d.state_dict(), 
             'scheduler_g': scheduler_g.state_dict(),
             'scheduler_d': scheduler_d.state_dict(),
-            'step': step
 
-        },  f'./checkpoints/{train_experiment}.pt')
-        shutil.copyfile(f'./checkpoints/{train_experiment}.pt', f'./checkpoints/{train_experiment}_step_{step}.pt')
+        },  fname_step)
+
+        # Overwrite main checkpoint
+        shutil.copyfile(fname_step, fname)
+
+    def load():
+        global steps
+        checkpoint = torch.load(str(output_dir / f"{train_experiment}.pt"), map_location="cpu")
+
+        # Model
+        accelerator.unwrap_model(generator).load_state_dict(checkpoint['generator'])
+        accelerator.unwrap_model(mpd).load_state_dict(checkpoint['mpd'])
+        accelerator.unwrap_model(msd).load_state_dict(checkpoint['msd'])
+
+        # Optimizer
+        optim_g.load_state_dict(checkpoint['optimizer_g'])
+        optim_d.load_state_dict(checkpoint['optimizer_d'])
+        scheduler_g.load_state_dict(checkpoint['scheduler_g'])
+        scheduler_d.load_state_dict(checkpoint['scheduler_d'])
+        steps = checkpoint['steps']
 
     # Train step
     def train_step():
 
         # Load batch
         audio, spec = next(train_cycle)
-        audio = audio.to(device, non_blocking=True)
+        # audio = audio.to(device, non_blocking=True)
         audio = audio.unsqueeze(1) # Adding a channel dimension
-        spec = spec.to(device, non_blocking=True)
+        # spec = spec.to(device, non_blocking=True)
 
         # Generate
         y_g_hat = generator(spec)
@@ -182,23 +208,26 @@ def main():
         loss_mel, loss_gen_s, loss_gen_f, loss_fm_s, loss_fm_f, loss_disc_s, loss_disc_f = train_step()
 
         # Update step
-        step = step + 1
+        steps = steps + 1
+
+        # Wait for everyone
+        accelerator.wait_for_everyone()
 
         # Log
-        if steps % train_log_every == 0:
-            print(f"Step {steps}: Mel Loss: {loss_mel}, Gen S Loss: {loss_gen_s}, Gen F Loss: {loss_gen_f}, FM S Loss: {loss_fm_s}, FM F Loss: {loss_fm_f}, Disc S Loss: {loss_disc_s}, Disc F Loss: {loss_disc_f}")
-            if accelerator.is_main_process:
-                accelerator.log({"loss_mel": loss_mel, "loss_gen_s": loss_gen_s, "loss_gen_f": loss_gen_f, "loss_fm_s": loss_fm_s, "loss_fm_f": loss_fm_f, "loss_disc_s": loss_disc_s, "loss_disc_f": loss_disc_f}, step=steps)
+        if accelerator.is_main_process and (steps % train_log_every == 0):
+            accelerator.print(f"Step {steps}: Mel Loss: {loss_mel}, Gen S Loss: {loss_gen_s}, Gen F Loss: {loss_gen_f}, FM S Loss: {loss_fm_s}, FM F Loss: {loss_fm_f}, Disc S Loss: {loss_disc_s}, Disc F Loss: {loss_disc_f}")
+            accelerator.log({"loss_mel": loss_mel, "loss_gen_s": loss_gen_s, "loss_gen_f": loss_gen_f, "loss_fm_s": loss_fm_s, "loss_fm_f": loss_fm_f, "loss_disc_s": loss_disc_s, "loss_disc_f": loss_disc_f}, step=steps)
 
         # Save 
-        if steps % train_save_every == 0:
+        if accelerator.is_main_process and (steps % train_save_every == 0):
             save()
 
     # End training
-    print("Finishing training...")
-    save()
+    if accelerator.is_main_process:
+        accelerator.print("Finishing training...")
+        save()
     accelerator.end_training()
-    print('✨ Training complete!')
+    accelerator.print('✨ Training complete!')
 
 #
 # Utility

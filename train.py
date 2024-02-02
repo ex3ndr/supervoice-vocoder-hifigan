@@ -43,7 +43,7 @@ train_steps = 1000000
 train_loader_workers = 4
 train_save_every = 1000
 train_log_every = 1
-train_evaluate_every = 1000
+train_evaluate_every = 200
 train_evaluate_batches = 10
 
 # Train

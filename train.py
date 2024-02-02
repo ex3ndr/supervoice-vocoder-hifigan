@@ -7,6 +7,7 @@ import itertools
 from glob import glob
 import shutil
 from pathlib import Path
+import random
 
 # ML
 import torch
@@ -42,6 +43,8 @@ train_steps = 1000000
 train_loader_workers = 4
 train_save_every = 1000
 train_log_every = 1
+train_evaluate_every = 1000
+train_evaluate_batches = 10
 
 # Train
 def main():
@@ -55,11 +58,17 @@ def main():
 
     # Prepare dataset
     accelerator.print("Loading dataset...")
-    train_files = glob("external_datasets/libritts-r-clean-100/*/*/*.wav") + glob("external_datasets/libritts-r-clean-360/*/*/*.wav") + glob("external_datasets/libritts-r-other-500/*/*/*.wav")
+
     # train_files = glob("external_datasets/libritts-r/dev-clean/*/*/*.wav") + glob("external_datasets/libritts-r/dev-other/*/*/*.wav")
-    test_files = glob("external_datasets/libritts-r/test-clean/*/*/*.wav") + glob("external_datasets/libritts-r/test-other/*/*/*.wav")
+    train_files = glob("external_datasets/libritts-r-clean-100/*/*/*.wav") + glob("external_datasets/libritts-r-clean-360/*/*/*.wav") + glob("external_datasets/libritts-r-other-500/*/*/*.wav")
     train_files.sort() # For reproducibility
-    test_files.sort()
+    
+    test_files = glob("external_datasets/libritts-r/test-clean/*/*/*.wav") + glob("external_datasets/libritts-r/test-other/*/*/*.wav")
+    random.seed(42)
+    random.shuffle(test_files)
+    random.seed(None)
+    test_files = test_files[:train_batch_size * train_evaluate_batches]
+
     train_dataset = MelSpecDataset(files = train_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
     test_dataset = MelSpecDataset(files = test_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=train_loader_workers, pin_memory=True)
@@ -143,12 +152,13 @@ def main():
 
     # Train step
     def train_step():
+        generator.train()
+        mpd.train()
+        msd.train()
 
         # Load batch
         audio, spec = next(train_cycle)
-        # audio = audio.to(device, non_blocking=True)
         audio = audio.unsqueeze(1) # Adding a channel dimension
-        # spec = spec.to(device, non_blocking=True)
 
         # Generate
         y_g_hat = generator(spec)
@@ -212,6 +222,26 @@ def main():
 
         # Wait for everyone
         accelerator.wait_for_everyone()
+
+        # Evaluate
+        if (steps % train_evaluate_every == 0):
+            if accelerator.is_main_process:
+                accelerator.print("Evaluating...")
+            with torch.inference_mode():      
+                generator.eval()
+                losses = []
+                for test_batch in test_loader:
+                    audio, spec = test_batch
+                    audio = audio.unsqueeze(1)
+                    y_g_hat = generator(spec)
+                    y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_mel_fft, vocoder_mel_n, vocoder_mel_hop_size, vocoder_mel_win_size, vocoder_sample_rate)
+                    loss_mel = F.l1_loss(spec, y_g_hat_mel) * 45
+                    losses += accelerator.gather(loss_mel).cpu().tolist()
+                if accelerator.is_main_process:
+                    loss = torch.tensor(losses).mean()
+                    accelerator.log({"loss_mel_test": loss}, step=steps)
+                    accelerator.print(f"Evaluation Loss: {loss}")
+                
 
         # Log
         if accelerator.is_main_process and (steps % train_log_every == 0):

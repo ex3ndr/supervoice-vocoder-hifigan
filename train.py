@@ -34,6 +34,7 @@ vocoder_sample_rate = 16000
 # Train parameters
 train_experiment = "pre"
 train_project = "hifigan"
+train_auto_resume = True
 train_segment_size = 8000
 train_learning_rate = 2e-4
 train_adam_b1 = 0.8
@@ -50,7 +51,6 @@ train_evaluate_batches = 10
 def main():
 
     # Prepare accelerator
-    print("Loading accelerator...")
     accelerator = Accelerator(log_with="wandb")
     device = accelerator.device
     output_dir = Path("./output")
@@ -135,7 +135,6 @@ def main():
         shutil.copyfile(fname_step, fname)
 
     def load():
-        global steps
         checkpoint = torch.load(str(output_dir / f"{train_experiment}.pt"), map_location="cpu")
 
         # Model
@@ -149,6 +148,14 @@ def main():
         scheduler_g.load_state_dict(checkpoint['scheduler_g'])
         scheduler_d.load_state_dict(checkpoint['scheduler_d'])
         steps = checkpoint['steps']
+
+        return steps
+    
+    # Load
+    if train_auto_resume:
+        if (output_dir / f"{train_experiment}.pt").exists():
+            accelerator.print("Resuming training...")
+            steps = load()
 
     # Train step
     def train_step():
@@ -211,7 +218,7 @@ def main():
         return loss_mel, loss_gen_s, loss_gen_f, loss_fm_s, loss_fm_f, loss_disc_s, loss_disc_f
 
     # Train Loop
-    print("Training started!")
+    accelerator.print("Training started at step", steps)
     while steps < train_steps:
 
         # Do iteration

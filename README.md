@@ -24,7 +24,7 @@ datasets sync
 This script automatically selects all GPU for training and you can run it by running:
 
 ```bash
-python train.py
+./train.sh
 ```
 
 # License

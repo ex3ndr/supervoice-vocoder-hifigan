@@ -9,8 +9,9 @@ This model requires about 1M updates of the network to perform well, this is abo
 ## Dependencies
 
 To run this model you need to have the following dependencies installed:
-
-## Datasets
+```
+pip install torch torchaudio accelerate
+```
 
 To download datasets you need a [datasets](https://github.com/ex3ndr/datasets) tool installed in your system, then you can download datasets by running:
 

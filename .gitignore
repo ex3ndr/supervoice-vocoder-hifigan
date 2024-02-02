@@ -2,3 +2,4 @@ external_datasets
 wandb
 __pycache__
 output
+.ipynb_checkpoints

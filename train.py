@@ -55,7 +55,7 @@ def main():
 
     # Prepare dataset
     accelerator.print("Loading dataset...")
-    train_files = glob("external_datasets/libritts-r-clean-100/*/*.wav") + glob("external_datasets/libritts-r-clean-360/*/*.wav") + glob("external_datasets/libritts-r-other-500/*/*.wav")
+    train_files = glob("external_datasets/libritts-r-clean-100/*/*/*.wav") + glob("external_datasets/libritts-r-clean-360/*/*/*.wav") + glob("external_datasets/libritts-r-other-500/*/*/*.wav")
     # train_files = glob("external_datasets/libritts-r/dev-clean/*/*/*.wav") + glob("external_datasets/libritts-r/dev-other/*/*/*.wav")
     test_files = glob("external_datasets/libritts-r/test-clean/*/*/*.wav") + glob("external_datasets/libritts-r/test-other/*/*/*.wav")
     train_files.sort() # For reproducibility

@@ -3,3 +3,7 @@ datasets:
   - libritts-r@clean-100
   - libritts-r@clean-360
   - libritts-r@other-500
+  - common-voice-16.0-en
+  - ptdb-tug
+  - musan
+  - vctk-corpus-0.92

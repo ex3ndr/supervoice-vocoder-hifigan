@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
+from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d, Identity
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 
 #
@@ -233,6 +233,7 @@ class MultiScaleDiscriminator(torch.nn.Module):
             DiscriminatorS(),
         ])
         self.meanpools = nn.ModuleList([
+            Identity(),
             AvgPool1d(4, 2, padding=2),
             AvgPool1d(4, 2, padding=2)
         ])
@@ -242,10 +243,9 @@ class MultiScaleDiscriminator(torch.nn.Module):
         y_d_gs = []
         fmap_rs = []
         fmap_gs = []
-        for i, d in enumerate(self.discriminators):
-            if i != 0:
-                y = self.meanpools[i-1](y)
-                y_hat = self.meanpools[i-1](y_hat)
+        for d, p in zip(self.discriminators, self.meanpools):
+            y = p(y)
+            y_hat = p(y_hat)
             y_d_r, fmap_r = d(y)
             y_d_g, fmap_g = d(y_hat)
             y_d_rs.append(y_d_r)

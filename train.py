@@ -13,6 +13,7 @@ import random
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 
 # Local
 from dataset import MelSpecDataset, spectogram
@@ -55,18 +56,17 @@ def main():
     device = accelerator.device
     output_dir = Path("./output")
     output_dir.mkdir(parents=True, exist_ok=True)
+    set_seed(42)
 
     # Prepare dataset
     accelerator.print("Loading dataset...")
 
-    # train_files = glob("external_datasets/libritts-r/dev-clean/*/*/*.wav") + glob("external_datasets/libritts-r/dev-other/*/*/*.wav")
-    train_files = glob("external_datasets/libritts-r-clean-100/*/*/*.wav") + glob("external_datasets/libritts-r-clean-360/*/*/*.wav") + glob("external_datasets/libritts-r-other-500/*/*/*.wav")
+    train_files = glob("datasets/prepared-libritts-r-clean-100/*/*/*.wav") + glob("datasets/prepared-libritts-r-clean-360/*/*/*.wav") + glob("datasets/prepared-libritts-r-other-500/*/*.wav") + glob("datasets/prepared-musan/*/*.wav")
     train_files.sort() # For reproducibility
+    random.shuffle(train_files)
     
     test_files = glob("external_datasets/libritts-r/test-clean/*/*/*.wav") + glob("external_datasets/libritts-r/test-other/*/*/*.wav")
-    random.seed(42)
     random.shuffle(test_files)
-    random.seed(None)
     test_files = test_files[:train_batch_size * train_evaluate_batches]
 
     train_dataset = MelSpecDataset(files = train_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
@@ -201,7 +201,7 @@ def main():
         y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(audio, y_g_hat)
         loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
         loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
-        loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
+        loss_gen_f, _ = generator_loss(y_df_hat_g)
         loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
         loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
         optim_g.zero_grad()
@@ -243,7 +243,10 @@ def main():
                     y_g_hat = generator(spec)
                     y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_mel_fft, vocoder_mel_n, vocoder_mel_hop_size, vocoder_mel_win_size, vocoder_sample_rate)
                     loss_mel = F.l1_loss(spec, y_g_hat_mel) * 45
-                    losses += accelerator.gather(loss_mel).cpu().tolist()
+                    gathered = accelerator.gather(loss_mel).cpu()
+                    if len(gathered.shape) == 0:
+                        gathered = gathered.unsqueeze(0)
+                    losses += gathered.tolist()
                 if accelerator.is_main_process:
                     loss = torch.tensor(losses).mean()
                     accelerator.log({"loss_mel_test": loss}, step=steps)

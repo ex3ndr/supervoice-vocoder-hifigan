@@ -278,15 +278,15 @@ def main():
                     output_audio = output_audio.unsqueeze(1)
                     y_g_hat = generator(input_spec)
                     y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_output_mel_fft, vocoder_output_mel_n, vocoder_output_mel_hop_size, vocoder_output_mel_win_size, vocoder_output_sample_rate)
-                    loss_mel = F.l1_loss(output_spec, y_g_hat_mel) * 45
-                    gathered = accelerator.gather(loss_mel).cpu()
+                    loss_mel_eval = F.l1_loss(output_spec, y_g_hat_mel) * 45
+                    gathered = accelerator.gather(loss_mel_eval).cpu()
                     if len(gathered.shape) == 0:
                         gathered = gathered.unsqueeze(0)
                     losses += gathered.tolist()
                 if accelerator.is_main_process:
-                    loss = torch.tensor(losses).mean()
-                    accelerator.log({"loss_mel_test": loss}, step=steps)
-                    accelerator.print(f"Evaluation Loss: {loss}")
+                    loss_eval = torch.tensor(losses).mean()
+                    accelerator.log({"loss_mel_test": loss_eval}, step=steps)
+                    accelerator.print(f"Evaluation Loss: {loss_eval}")
                 
 
         # Log

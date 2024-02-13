@@ -7,14 +7,37 @@ import math
 
 class MelSpecDataset(torch.utils.data.Dataset):
     
-    def __init__(self, *, files, sample_rate, segment_size, mel_n, mel_fft, mel_hop_size, mel_win_size):
+    def __init__(self, *, 
+        
+        # Audio Parameters
+        files, segment_size, 
+
+        # Mel Spectogram Parameters
+        mel_sample_rate, 
+        mel_n, 
+        mel_fft, 
+        mel_hop_size, 
+        mel_win_size,
+
+        # Output Mel Spectogram Parameters
+        output_mel_n,
+        output_mel_fft,
+        output_mel_hop_size,
+        output_mel_win_size,
+        output_sample_rate,
+    ):
         self.files = files
-        self.sample_rate = sample_rate
         self.segment_size = segment_size
         self.mel_n = mel_n
         self.mel_fft = mel_fft
         self.mel_hop_size = mel_hop_size
         self.mel_win_size = mel_win_size
+        self.mel_sample_rate = mel_sample_rate
+        self.output_mel_n = output_mel_n
+        self.output_mel_fft = output_mel_fft
+        self.output_mel_hop_size = output_mel_hop_size
+        self.output_mel_win_size = output_mel_win_size
+        self.output_sample_rate = output_sample_rate
     
     def __getitem__(self, index):
 
@@ -22,19 +45,23 @@ class MelSpecDataset(torch.utils.data.Dataset):
         filename = self.files[index]
 
         # Load audio
-        audio = load_mono_audio(filename, self.sample_rate)
+        output_audio = load_mono_audio(filename, self.output_sample_rate)
 
         # Pad or trim to target duration
-        if audio.shape[0] >= self.segment_size:
-            audio_start = random.randint(0, audio.shape[0] - self.segment_size)
-            audio = audio[audio_start:audio_start+self.segment_size]
-        elif audio.shape[0] < self.segment_size: # Rare or impossible case - just pad with zeros
-            audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.shape[0]))
+        if output_audio.shape[0] >= self.segment_size:
+            audio_start = random.randint(0, output_audio.shape[0] - self.segment_size)
+            output_audio = output_audio[audio_start:audio_start+self.segment_size]
+        elif output_audio.shape[0] < self.segment_size: # Rare or impossible case - just pad with zeros
+            output_audio = torch.nn.functional.pad(output_audio, (0, self.segment_size - output_audio.shape[0]))
+
+        # Output Spectogram
+        output_spec = spectogram(output_audio, self.output_mel_fft, self.output_mel_n, self.output_mel_hop_size, self.output_mel_win_size, self.output_sample_rate)
 
         # Compute Spectogram
-        spec = spectogram(audio, self.mel_fft, self.mel_n, self.mel_hop_size, self.mel_win_size, self.sample_rate)
+        input_audio = resampler(self.output_sample_rate, self.mel_sample_rate, output_audio.device)(output_audio)
+        spec = spectogram(input_audio, self.mel_fft, self.mel_n, self.mel_hop_size, self.mel_win_size, self.mel_sample_rate)
 
-        return (audio, spec)
+        return (output_audio, output_spec, spec)
 
     def __len__(self):
         return len(self.files)

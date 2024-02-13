@@ -21,26 +21,33 @@ from model import HiFiGAN, MultiPeriodDiscriminator, MultiScaleDiscriminator, di
 
 # Model paramerters
 vocoder_resblock = "1"
-vocoder_upsample_rates = [5,4,4,2]
-vocoder_upsample_kernel_sizes = [11,8,8,4]
+vocoder_upsample_rates = [8,5,3,2]
+vocoder_upsample_kernel_sizes = [16,9,5,4] # Looks like it should be ~2x the upsample rate
 vocoder_upsample_initial_channel = 512
 vocoder_resblock_kernel_sizes = [3,7,11]
 vocoder_resblock_dilation_sizes = [[1,3,5], [1,3,5], [1,3,5]]
+
+vocoder_output_mel_n = 80
+vocoder_output_mel_fft = 1024
+vocoder_output_mel_hop_size = 240
+vocoder_output_mel_win_size = 960
+vocoder_output_sample_rate = 24000
+
 vocoder_mel_n = 80
 vocoder_mel_fft = 1024
 vocoder_mel_hop_size = 160
 vocoder_mel_win_size = 640
-vocoder_sample_rate = 16000
+vocoder_mel_sample_rate = 16000
 
 # Train parameters
-train_experiment = "pre"
+train_experiment = "upscale"
 train_project = "hifigan"
 train_auto_resume = True
-train_segment_size = 8000
+train_segment_size = 12000
 train_learning_rate = 2e-4
 train_adam_b1 = 0.8
 train_adam_b2 = 0.99
-train_batch_size = 64 # Per GPU
+train_batch_size = 32 # Per GPU
 train_steps = 1000000
 train_loader_workers = 4
 train_save_every = 1000
@@ -61,16 +68,42 @@ def main():
     # Prepare dataset
     accelerator.print("Loading dataset...")
 
-    train_files = glob("datasets/prepared-libritts-r-clean-100/*/*/*.wav") + glob("datasets/prepared-libritts-r-clean-360/*/*/*.wav") + glob("datasets/prepared-libritts-r-other-500/*/*.wav") + glob("datasets/prepared-musan/*/*.wav")
-    train_files.sort() # For reproducibility
+    train_files = []
+    train_files += glob("datasets/prepared-libritts-r-clean-100/*/*/*.wav")
+    train_files += glob("datasets/prepared-libritts-r-clean-360/*/*/*.wav")
+    train_files += glob("datasets/prepared-libritts-r-other-500/*/*.wav")
+    train_files += glob("datasets/prepared-musan/*/*.wav")
+    train_files += glob("datasets/prepared-vctk-corpus-0.92/*/*.wav") 
+    train_files += glob("datasets/prepared-common-voice/*/*.wav")
+    train_files.sort()
     random.shuffle(train_files)
     
-    test_files = glob("external_datasets/libritts-r/test-clean/*/*/*.wav") + glob("external_datasets/libritts-r/test-other/*/*/*.wav")
+    test_files = []
+    test_files += glob("external_datasets/libritts-r/test-clean/*/*/*.wav") 
+    test_files += glob("external_datasets/libritts-r/test-other/*/*/*.wav")
+    train_files.sort()
     random.shuffle(test_files)
     test_files = test_files[:train_batch_size * train_evaluate_batches]
 
-    train_dataset = MelSpecDataset(files = train_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
-    test_dataset = MelSpecDataset(files = test_files, sample_rate=vocoder_sample_rate, segment_size=train_segment_size, mel_n=vocoder_mel_n, mel_fft=vocoder_mel_fft, mel_hop_size=vocoder_mel_hop_size, mel_win_size=vocoder_mel_win_size)
+    dataset_args = { 
+        "segment_size": train_segment_size, 
+
+        # Input
+        "mel_sample_rate": vocoder_mel_sample_rate, 
+        "mel_n": vocoder_mel_n, 
+        "mel_fft": vocoder_mel_fft, 
+        "mel_hop_size": vocoder_mel_hop_size, 
+        "mel_win_size": vocoder_mel_win_size,
+
+        # Output
+        "output_mel_n": vocoder_output_mel_n,
+        "output_mel_fft": vocoder_output_mel_fft,
+        "output_mel_hop_size": vocoder_output_mel_hop_size,
+        "output_mel_win_size": vocoder_output_mel_win_size,
+        "output_sample_rate": vocoder_output_sample_rate,
+    }
+    train_dataset = MelSpecDataset(files = train_files, **dataset_args)
+    test_dataset = MelSpecDataset(files = test_files, **dataset_args)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=train_loader_workers, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=train_batch_size, shuffle=False, num_workers=train_loader_workers, pin_memory=True)
 
@@ -164,29 +197,30 @@ def main():
         msd.train()
 
         # Load batch
-        audio, spec = next(train_cycle)
-        audio = audio.unsqueeze(1) # Adding a channel dimension
+        output_audio, output_spec, input_spec = next(train_cycle)
+        output_audio = output_audio.unsqueeze(1) # Adding a channel dimension
 
         # Generate
-        y_g_hat = generator(spec)
-        y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_mel_fft, vocoder_mel_n, vocoder_mel_hop_size, vocoder_mel_win_size, vocoder_sample_rate)
+        y_g_hat = generator(input_spec)
 
         #
         # Discriminator
         #
 
         # MPD
-        y_df_hat_r, y_df_hat_g, _, _ = mpd(audio, y_g_hat.detach())
+        y_df_hat_r, y_df_hat_g, _, _ = mpd(output_audio, y_g_hat.detach())
         loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
 
         # MSD
-        y_ds_hat_r, y_ds_hat_g, _, _ = msd(audio, y_g_hat.detach())
+        y_ds_hat_r, y_ds_hat_g, _, _ = msd(output_audio, y_g_hat.detach())
         loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
 
         # Train Discriminator
         loss_disc_all = loss_disc_s + loss_disc_f
         optim_d.zero_grad()
         accelerator.backward(loss_disc_all)
+        grad_norm_mpd = accelerator.clip_grad_norm_(mpd.parameters(), 1000.)
+        grad_norm_msd = accelerator.clip_grad_norm_(msd.parameters(), 1000.)
         optim_d.step()
 
         #
@@ -194,11 +228,12 @@ def main():
         #
 
         # L1 Mel-Spectrogram Loss
-        loss_mel = F.l1_loss(spec, y_g_hat_mel) * 45
+        y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_output_mel_fft, vocoder_output_mel_n, vocoder_output_mel_hop_size, vocoder_output_mel_win_size, vocoder_output_sample_rate)
+        loss_mel = F.l1_loss(output_spec, y_g_hat_mel) * 45
 
         # Discriminator-based losses
-        y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(audio, y_g_hat)
-        y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(audio, y_g_hat)
+        y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(output_audio, y_g_hat)
+        y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(output_audio, y_g_hat)
         loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
         loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
         loss_gen_f, _ = generator_loss(y_df_hat_g)
@@ -206,6 +241,7 @@ def main():
         loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
         optim_g.zero_grad()
         accelerator.backward(loss_gen_all)
+        grad_norm_g = accelerator.clip_grad_norm_(generator.parameters(), 1000.)
         optim_g.step()
 
         #
@@ -215,14 +251,14 @@ def main():
         scheduler_d.step()
         scheduler_g.step()
 
-        return loss_mel, loss_gen_s, loss_gen_f, loss_fm_s, loss_fm_f, loss_disc_s, loss_disc_f
+        return loss_mel, loss_gen_s, loss_gen_f, loss_fm_s, loss_fm_f, loss_disc_s, loss_disc_f, grad_norm_mpd, grad_norm_msd, grad_norm_g
 
     # Train Loop
     accelerator.print("Training started at step", steps)
     while steps < train_steps:
 
         # Do iteration
-        loss_mel, loss_gen_s, loss_gen_f, loss_fm_s, loss_fm_f, loss_disc_s, loss_disc_f = train_step()
+        loss_mel, loss_gen_s, loss_gen_f, loss_fm_s, loss_fm_f, loss_disc_s, loss_disc_f, grad_norm_mpd, grad_norm_msd, grad_norm_g = train_step()
 
         # Update step
         steps = steps + 1
@@ -238,11 +274,11 @@ def main():
                 generator.eval()
                 losses = []
                 for test_batch in test_loader:
-                    audio, spec = test_batch
-                    audio = audio.unsqueeze(1)
-                    y_g_hat = generator(spec)
-                    y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_mel_fft, vocoder_mel_n, vocoder_mel_hop_size, vocoder_mel_win_size, vocoder_sample_rate)
-                    loss_mel = F.l1_loss(spec, y_g_hat_mel) * 45
+                    output_audio, output_spec, input_spec = test_batch
+                    output_audio = output_audio.unsqueeze(1)
+                    y_g_hat = generator(input_spec)
+                    y_g_hat_mel = spectogram(y_g_hat.squeeze(1), vocoder_output_mel_fft, vocoder_output_mel_n, vocoder_output_mel_hop_size, vocoder_output_mel_win_size, vocoder_output_sample_rate)
+                    loss_mel = F.l1_loss(output_spec, y_g_hat_mel) * 45
                     gathered = accelerator.gather(loss_mel).cpu()
                     if len(gathered.shape) == 0:
                         gathered = gathered.unsqueeze(0)
@@ -256,7 +292,18 @@ def main():
         # Log
         if accelerator.is_main_process and (steps % train_log_every == 0):
             accelerator.print(f"Step {steps}: Mel Loss: {loss_mel}, Gen S Loss: {loss_gen_s}, Gen F Loss: {loss_gen_f}, FM S Loss: {loss_fm_s}, FM F Loss: {loss_fm_f}, Disc S Loss: {loss_disc_s}, Disc F Loss: {loss_disc_f}")
-            accelerator.log({"loss_mel": loss_mel, "loss_gen_s": loss_gen_s, "loss_gen_f": loss_gen_f, "loss_fm_s": loss_fm_s, "loss_fm_f": loss_fm_f, "loss_disc_s": loss_disc_s, "loss_disc_f": loss_disc_f}, step=steps)
+            accelerator.log({
+                "loss_mel": loss_mel, 
+                "loss_gen_s": loss_gen_s, 
+                "loss_gen_f": loss_gen_f, 
+                "loss_fm_s": loss_fm_s, 
+                "loss_fm_f": loss_fm_f, 
+                "loss_disc_s": loss_disc_s, 
+                "loss_disc_f": loss_disc_f,
+                'grad_norm_mpd': grad_norm_mpd,
+                'grad_norm_msd': grad_norm_msd,
+                'grad_norm_g': grad_norm_g,
+            }, step=steps)
 
         # Save 
         if accelerator.is_main_process and (steps % train_save_every == 0):

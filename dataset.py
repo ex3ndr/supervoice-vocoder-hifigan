@@ -132,15 +132,23 @@ def spectogram(audio, n_fft, n_mels, n_hop, n_window, sample_rate):
 
     # STFT
     stft = torch.stft(audio, 
-        n_fft, 
-        hop_length=n_hop, 
-        win_length=n_window,
-        window=window, 
-        return_complex=False
+        
+        # STFT Parameters
+        n_fft = n_fft, 
+        hop_length = n_hop, 
+        win_length = n_window,
+        window = window, 
+        center = True,
+        
+        onesided = True, # Default to true to real input, but we enforce it just in case
+        return_complex = True
     )
 
-    # Compute magnitudes using squared value
-    magnitudes = torch.sum((stft ** 2), dim=-1)[..., :-1]
+    # Compute magnitudes (|a + ib| = sqrt(a^2 + b^2)) instead of power spectrum (|a + ib|^2 = a^2 + b^2)
+    # because magnitude and phase is linear to the input, while power spectrum is quadratic to the input
+    # and the magnitude is easier to learn for vocoder
+    # magnitudes = stft[..., :-1].abs() ** 2 # Power
+    magnitudes = stft[..., :-1].abs() # Amplitude
 
     # Mel Log Bank
     mel_filters = melscale_fbanks(n_mels, n_fft, 0, sample_rate / 2, sample_rate, audio.device)
